@@ -1,27 +1,32 @@
 package squasher
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 )
 
 type Squasher struct {
-	circle []byte
+	circle      []byte
 	start_value int64
-	start_byte uint
-	start_bit uint
-	lock *sync.Mutex
-	nextchan chan int64
+	start_byte  uint
+	start_bit   uint
+	lock        *sync.Mutex
+	nextchan    chan int64
 }
 
 func NewSquasher(start int64, size int32) *Squasher {
-	circlelen := size / 8 + 1
+	circlelen := (size + 7) / 8 // number of byte to store <size> bit
+	circlelen++                 // add extra byte to mark end of circle
+	circle := make([]byte, circlelen)
+	circle[0] = 1
 	return &Squasher{
-		lock: &sync.Mutex{},
-		nextchan: make(chan int64, 0),
+		lock:        &sync.Mutex{},
+		nextchan:    make(chan int64, 0),
 		start_value: start,
-		start_byte: 0,
-		start_bit: 0,
-		circle: make([]byte, circlelen),
+		start_byte:  0,
+		start_bit:   0,
+		circle:      circle,
 	}
 }
 
@@ -30,21 +35,29 @@ func (s *Squasher) Mark(i int64) error {
 	defer s.lock.Unlock()
 
 	dist := i - s.start_value
-	if dist < 0 {
+	if dist <= 0 {
 		return nil
 	}
+	ln := uint(len(s.circle))
 
-	nextbyte := uint((dist + int64(s.start_bit - 8)) / int64(8))
-	// 8 - t + 8 * diffbyte + x = dist
+	if int64(ln)*8-1 < dist {
+		return errors.New(fmt.Sprintf("out of range, i should be less than %d", int64(ln)-1+s.start_value))
+	}
 
-	bit := uint(dist - int64(8 + s.start_bit) - int64(8 * nextbyte))
+	nextbyte := uint((dist + int64(s.start_bit)) / 8)
+	nextbyte = (s.start_byte + nextbyte) % ln
 
-	ind := nextbyte + s.start_byte % uint(len(s.circle))
-	s.circle[ind] |= 1 << bit
-
+	bit := uint((dist + int64(s.start_bit)) % 8)
+	s.circle[nextbyte] |= 1 << bit
 	if dist == 1 {
 		s.start_value, s.start_byte, s.start_bit = getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
 		s.nextchan <- s.start_value
+
+		lastbyte := s.start_byte - 1
+		if s.start_byte == 0 {
+			lastbyte = ln - 1
+		}
+		s.circle[lastbyte] = 0
 	}
 	return nil
 }
@@ -52,7 +65,7 @@ func (s *Squasher) Mark(i int64) error {
 // getFirstZeroBit return the first zero bit
 func getFirstZeroBit(x byte) uint {
 	for bit := uint(0); bit < 8; bit++ {
-		if x % 2 == 0 {
+		if x%2 == 0 {
 			return bit
 		}
 		x >>= 1
@@ -83,15 +96,20 @@ func getNextMissingIndex(circle []byte, start_value int64, start_byte, start_bit
 	}
 	byt := getNextNonFFByte(circle, start_byte)
 	bit := getFirstZeroBit(circle[byt])
-	// bit never be 8 because circle[byt] is non 0xFF
-	if bit == 0 {
-		bit, byt = 7, byt - 1
-	} else {
-		bit--
+	if bit == 8 || bit == 0 { // got 0xFF
+		if byt == 0 {
+			byt = ln - 1
+		} else {
+			byt--
+		}
+		bit = 8
 	}
-
-	dist := (byt + ln - start_byte) % ln * 8 + bit - start_bit
-	return start_value + int64(dist), byt, bit
+	bit--
+	if byt < start_byte {
+		byt += ln
+	}
+	dist := (byt-start_byte)*8 + bit - start_bit
+	return start_value + int64(dist), byt % ln, bit
 }
 
 func (s *Squasher) Next() <-chan int64 {
