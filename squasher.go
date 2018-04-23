@@ -16,6 +16,9 @@ type Squasher struct {
 }
 
 func NewSquasher(start int64, size int32) *Squasher {
+	if size < 2 {
+		size = 2
+	}
 	circlelen := (size + 7) / 8 // number of byte to store <size> bit
 	circlelen++                 // add extra byte to mark end of circle
 	circle := make([]byte, circlelen)
@@ -28,6 +31,20 @@ func NewSquasher(start int64, size int32) *Squasher {
 		start_bit:   0,
 		circle:      circle,
 	}
+}
+
+func closeCircle(circle []byte, start_byte uint) {
+	ln := uint(len(circle))
+	if ln < 1 { // need at least 2 byte to form a circle
+		return
+	}
+
+	start_byte %= ln
+	prevbyte := start_byte - 1
+	if start_byte == 0 {
+		prevbyte = ln - 1
+	}
+	circle[prevbyte] = 0
 }
 
 func (s *Squasher) Mark(i int64) error {
@@ -44,21 +61,20 @@ func (s *Squasher) Mark(i int64) error {
 		return errors.New(fmt.Sprintf("out of range, i should be less than %d", int64(ln)-1+s.start_value))
 	}
 
-	nextbyte := uint((dist + int64(s.start_bit)) / 8)
-	nextbyte = (s.start_byte + nextbyte) % ln
+	bytediff := uint((dist + int64(s.start_bit)) / 8)
+	nextbyte := (s.start_byte + bytediff) % ln
 
 	bit := uint((dist + int64(s.start_bit)) % 8)
 	s.circle[nextbyte] |= 1 << bit
-	if dist == 1 {
-		s.start_value, s.start_byte, s.start_bit = getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
-		s.nextchan <- s.start_value
-
-		lastbyte := s.start_byte - 1
-		if s.start_byte == 0 {
-			lastbyte = ln - 1
-		}
-		s.circle[lastbyte] = 0
+	if dist != 1 {
+		return nil
 	}
+
+	s.start_value, s.start_byte, s.start_bit =
+		getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
+
+	closeCircle(s.circle, s.start_byte)
+	s.nextchan <- s.start_value
 	return nil
 }
 
@@ -98,10 +114,9 @@ func getNextMissingIndex(circle []byte, start_value int64, start_byte, start_bit
 	bit := getFirstZeroBit(circle[byt])
 	if bit == 8 || bit == 0 { // got 0xFF
 		if byt == 0 {
-			byt = ln - 1
-		} else {
-			byt--
+			byt = ln
 		}
+		byt--
 		bit = 8
 	}
 	bit--
