@@ -13,6 +13,7 @@ type Squasher struct {
 	start_bit   uint
 	lock        *sync.Mutex
 	nextchan    chan int64
+	latest     int64
 }
 
 func NewSquasher(start int64, size int32) *Squasher {
@@ -50,7 +51,9 @@ func closeCircle(circle []byte, start_byte uint) {
 func (s *Squasher) Mark(i int64) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-
+	if i > s.latest {
+		s.latest = i
+	}
 	dist := i - s.start_value
 	if dist <= 0 {
 		return nil
@@ -127,6 +130,9 @@ func getNextMissingIndex(circle []byte, start_value int64, start_byte, start_bit
 	return start_value + int64(dist), byt % ln, bit
 }
 
-func (s *Squasher) Next() <-chan int64 {
-	return s.nextchan
+func (s *Squasher) Next() <-chan int64 { return s.nextchan }
+
+func (s *Squasher) GetStatus() string {
+	ofs, _, _ := getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
+	return fmt.Sprintf("first offset: %d, last offset: %d, next missing %d", s.start_value, s.latest, ofs)
 }
