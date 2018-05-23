@@ -7,13 +7,13 @@ import (
 )
 
 type Squasher struct {
+	*sync.Mutex
 	circle      []byte
 	start_value int64
 	start_byte  uint
 	start_bit   uint
-	lock        *sync.Mutex
 	nextchan    chan int64
-	latest     int64
+	latest      int64
 }
 
 func NewSquasher(start int64, size int32) *Squasher {
@@ -25,7 +25,7 @@ func NewSquasher(start int64, size int32) *Squasher {
 	circle := make([]byte, circlelen)
 	circle[0] = 1
 	return &Squasher{
-		lock:        &sync.Mutex{},
+		Mutex:       &sync.Mutex{},
 		nextchan:    make(chan int64, 0),
 		start_value: start,
 		start_byte:  0,
@@ -49,8 +49,8 @@ func closeCircle(circle []byte, start_byte uint) {
 }
 
 func (s *Squasher) Mark(i int64) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.Lock()
+	defer s.Unlock()
 	if i > s.latest {
 		s.latest = i
 	}
