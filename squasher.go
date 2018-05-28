@@ -3,11 +3,9 @@ package squasher
 import (
 	"errors"
 	"fmt"
-	"sync"
 )
 
 type Squasher struct {
-	*sync.Mutex
 	circle      []byte
 	start_value int64
 	start_byte  uint
@@ -25,8 +23,7 @@ func NewSquasher(start int64, size int32) *Squasher {
 	circle := make([]byte, circlelen)
 	circle[0] = 1
 	return &Squasher{
-		Mutex:       &sync.Mutex{},
-		nextchan:    make(chan int64, 0),
+		nextchan:    make(chan int64, 1000),
 		start_value: start,
 		start_byte:  0,
 		start_bit:   0,
@@ -49,8 +46,6 @@ func closeCircle(circle []byte, start_byte uint) {
 }
 
 func (s *Squasher) Mark(i int64) error {
-	s.Lock()
-	defer s.Unlock()
 	if i > s.latest {
 		s.latest = i
 	}
