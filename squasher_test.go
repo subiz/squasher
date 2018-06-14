@@ -19,10 +19,14 @@ func TestSquasherLimit(t *testing.T) {
 		sq.Mark(int64(i))
 	}
 
-	err := sq.Mark(20000)
-	if err == nil {
+	defer func() {
+		if r := recover(); r != nil {
+			return
+		}
 		t.Errorf("should be error, got nil")
-	}
+
+	}()
+	sq.Mark(20000)
 }
 
 func TestFirstZeroBit(t *testing.T) {
@@ -50,16 +54,14 @@ func TestNextMissingIndex(t *testing.T) {
 		nextvalue         int64
 		nextbyte, nextbit uint
 	}{
-		{nil, 0, 0, 0, 0, 0, 0},
-		{nil, 1, 4, 2, 0, 0, 0},
 		{[]byte{0x0F, 0, 0}, 2100, 0, 1, 2102, 0, 3},    // - 1111 | - - | - -
 		{[]byte{0xFF, 0x1F, 0}, 2100, 0, 2, 2110, 1, 4}, // 1111 1111 | 0001 1111 | --
 		{[]byte{0, 0xFF, 0x05}, 2100, 1, 4, 2104, 2, 0}, // -- | 1111 1111 | - 0101
 		{[]byte{0, 0xFF, 0}, 2100, 1, 4, 2103, 1, 7},    // -- | 1111 1111 | -
 		{[]byte{0x0F, 0, 0xFF}, 2100, 2, 0, 2111, 0, 3}, // - 1111 | - | 1111 1111
-		{[]byte{0xff, 0xff, 0xff, 0x3f, 00}, 0, 0, 0, 29, 3, 5},
+		{[]byte{0xff, 0xff, 0xff, 0x3f, 0}, 0, 0, 0, 29, 3, 5},
 		{[]byte{0xff, 0, 0xff, 0xff}, 0, 2, 0, 23, 0, 7},
-		{[]byte{0xff, 0xff, 0xff}, 0, 1, 0, 23, 0, 7},
+		{[]byte{0xff, 0xff, 0xff, 0}, 0, 1, 0, 15, 2, 7},
 		{[]byte{0, 0xff}, 0, 1, 0, 7, 1, 7},
 	}
 
@@ -84,12 +86,11 @@ func TestNextNonFFByte(t *testing.T) {
 		circle             []byte
 		start_byte, output uint
 	}{
-		{[]byte{0xFF, 0xF4}, 0, 1},
-		{[]byte{0xFF, 0xFF, 0xF4, 0xFF, 0xFE}, 3, 4},
-		{[]byte{}, 0, 0},
-		{[]byte{0xFE, 0xFF}, 0, 0},
-		{[]byte{0xFF, 0xFF}, 0, 0},
-		{[]byte{0xFF, 0xFF}, 10, 0},
+		{[]byte{0xFF, 0xF4, 0}, 0, 1},
+		{[]byte{0xFF, 0xFF, 0xF4, 0xFF, 0xFE, 0}, 3, 4},
+		{[]byte{0xFE, 0xFF, 0}, 0, 0},
+		{[]byte{0xFF, 0xFF, 0}, 0, 2},
+		{[]byte{0, 0xFF, 0xFF}, 1, 0},
 	}
 	for _, c := range ts {
 		out := getNextNonFFByte(c.circle, c.start_byte)
@@ -100,9 +101,7 @@ func TestNextNonFFByte(t *testing.T) {
 }
 
 func TestSquasher(t *testing.T) {
-	t.Skip()
-
-	sq := NewSquasher(0, 1000)
+	sq := NewSquasher(0, 4)
 
 	gotc := make(chan int64)
 
@@ -112,9 +111,11 @@ func TestSquasher(t *testing.T) {
 		}
 	}()
 
+
 	sq.Mark(2)
 	sq.Mark(3)
 	sq.Mark(4)
+	sq.Mark(1)
 
 	select {
 	case <-gotc:
@@ -123,7 +124,7 @@ func TestSquasher(t *testing.T) {
 
 	}
 
-	sq.Mark(1)
+	sq.Mark(0)
 	out := <-gotc
 	if out != 4 {
 		t.Errorf("expect 4, got %d", out)
@@ -141,10 +142,8 @@ func TestSquasher100(t *testing.T) {
 			gotc <- i
 		}
 	}()
-	for i := int64(2); i <= 400; i++ {
-		if err := sq.Mark(i); err != nil {
-			t.Error(err)
-		}
+	for i := int64(1); i <= 400; i++ {
+		sq.Mark(i)
 
 	}
 	select {
@@ -153,7 +152,7 @@ func TestSquasher100(t *testing.T) {
 	default:
 
 	}
-	sq.Mark(1)
+	sq.Mark(0)
 	out := <-gotc
 	if out != 400 {
 		t.Errorf("expect 400, got %d", out)

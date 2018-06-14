@@ -1,9 +1,6 @@
 package squasher
 
-import (
-	"errors"
-	"fmt"
-)
+import "fmt"
 
 type Squasher struct {
 	circle      []byte
@@ -14,66 +11,64 @@ type Squasher struct {
 	latest      int64
 }
 
+// a circle with size = 2
+//     start_byte: 1 --v     v-- start_bit: 3
+// byt 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 3 3 3 3 3 3 3 3
+// bit 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+
+//
+//
 func NewSquasher(start int64, size int32) *Squasher {
 	if size < 2 {
 		size = 2
 	}
-	circlelen := (size + 7) / 8 // number of byte to store <size> bit
-	circlelen++                 // add extra byte to mark end of circle
-	circle := make([]byte, circlelen)
+	circlelen := size/8 + 1 // number of byte to store <size> bit
+	circlelen++             // add extra byte to mark end of circle
+	circle := make([]byte, circlelen, circlelen)
 	circle[0] = 1
 	return &Squasher{
 		nextchan:    make(chan int64, 1000),
-		start_value: start,
+		start_value: start - 1,
 		start_byte:  0,
 		start_bit:   0,
 		circle:      circle,
 	}
 }
 
+// closeCircle set the end_byte (byte before start_byte) to zero
 func closeCircle(circle []byte, start_byte uint) {
 	ln := uint(len(circle))
-	if ln < 1 { // need at least 2 byte to form a circle
-		return
-	}
-
-	start_byte %= ln
-	prevbyte := start_byte - 1
-	if start_byte == 0 {
-		prevbyte = ln - 1
-	}
+	prevbyte := (start_byte + ln - 1) % ln
 	circle[prevbyte] = 0
 }
 
-func (s *Squasher) Mark(i int64) error {
+func (s *Squasher) Mark(i int64) {
 	if i > s.latest {
 		s.latest = i
 	}
 	dist := i - s.start_value
 	if dist <= 0 {
-		return nil
+		return
 	}
 	ln := uint(len(s.circle))
 
-	if int64(ln)*8-1 < dist {
-		return errors.New(fmt.Sprintf("out of range, i should be less than %d", int64(ln)-1+s.start_value))
+	if uint(dist) > ln*8-1 {
+		panic(fmt.Sprintf("out of range, i should be less than %d", int64(ln)-1+s.start_value))
 	}
 
-	bytediff := uint((dist + int64(s.start_bit)) / 8)
+	bytediff := (uint(dist) + s.start_bit) / 8
 	nextbyte := (s.start_byte + bytediff) % ln
 
-	bit := uint((dist + int64(s.start_bit)) % 8)
+	bit := (uint(dist) + s.start_bit) % 8
 	s.circle[nextbyte] |= 1 << bit
 	if dist != 1 {
-		return nil
+		return
 	}
-
 	s.start_value, s.start_byte, s.start_bit =
 		getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
 
 	closeCircle(s.circle, s.start_byte)
 	s.nextchan <- s.start_value
-	return nil
 }
 
 // getFirstZeroBit return the first zero bit
@@ -87,37 +82,26 @@ func getFirstZeroBit(x byte) uint {
 	return 8
 }
 
+// get next non 0xFF byte, assume that the circle alway end with 0x00
 func getNextNonFFByte(circle []byte, start_byte uint) uint {
 	ln := uint(len(circle))
-	if ln == 0 {
-		return 0
-	}
-	start_byte = start_byte % ln
-	byt := start_byte
-	for circle[byt] == 0xFF {
-		byt = (byt + 1) % ln
-		if byt == start_byte { // finish one loop
-			break
+	for ; circle[start_byte%ln] == 0xFF; start_byte++ {
+		if start_byte > 2*ln {
+			panic(fmt.Sprintf("invalid circle, no end: %v", circle))
 		}
 	}
-	return byt
+	return start_byte % ln
 }
 
 func getNextMissingIndex(circle []byte, start_value int64, start_byte, start_bit uint) (int64, uint, uint) {
 	ln := uint(len(circle))
-	if ln == 0 {
-		return 0, 0, 0
-	}
 	byt := getNextNonFFByte(circle, start_byte)
 	bit := getFirstZeroBit(circle[byt])
-	if bit == 8 || bit == 0 { // got 0xFF
-		if byt == 0 {
-			byt = ln
-		}
-		byt--
-		bit = 8
+	if bit == 0 { // got 0 -> decrease 1 byte
+		byt = (byt + ln - 1) % ln
 	}
-	bit--
+	bit = (bit + 8 - 1) % 8
+
 	if byt < start_byte {
 		byt += ln
 	}
