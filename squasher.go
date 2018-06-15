@@ -1,13 +1,20 @@
 package squasher
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+	"sync"
+	"time"
+)
 
 type Squasher struct {
+	*sync.Mutex
 	circle      []byte
 	start_value int64
 	start_byte  uint
 	start_bit   uint
-	nextchan    chan int64
+	mynextchan  chan int64 // internal next chan
+	nextchan    chan int64 // next chan receive next value
 	latest      int64
 }
 
@@ -26,13 +33,17 @@ func NewSquasher(start int64, size int32) *Squasher {
 	circlelen++             // add extra byte to mark end of circle
 	circle := make([]byte, circlelen, circlelen)
 	circle[0] = 1
-	return &Squasher{
-		nextchan:    make(chan int64, 1000),
+	s := &Squasher{
+		Mutex:       &sync.Mutex{},
+		nextchan:    make(chan int64),
+		mynextchan:  make(chan int64),
 		start_value: start - 1,
 		start_byte:  0,
 		start_bit:   0,
 		circle:      circle,
 	}
+	go s.run()
+	return s
 }
 
 // closeCircle set the end_byte (byte before start_byte) to zero
@@ -42,18 +53,22 @@ func closeCircle(circle []byte, start_byte uint) {
 	circle[prevbyte] = 0
 }
 
-func (s *Squasher) Mark(i int64) {
+//
+func (s *Squasher) Mark(i int64) error {
+	s.Lock()
+	defer s.Unlock()
+
 	if i > s.latest {
 		s.latest = i
 	}
 	dist := i - s.start_value
 	if dist <= 0 {
-		return
+		return nil
 	}
 	ln := uint(len(s.circle))
 
 	if uint(dist) > ln*8-1 {
-		panic(fmt.Sprintf("out of range, i should be less than %d", int64(ln)-1+s.start_value))
+		return fmt.Errorf("out of range, i should be less than %d", int64(ln)-1+s.start_value)
 	}
 
 	bytediff := (uint(dist) + s.start_bit) / 8
@@ -62,13 +77,14 @@ func (s *Squasher) Mark(i int64) {
 	bit := (uint(dist) + s.start_bit) % 8
 	s.circle[nextbyte] |= 1 << bit
 	if dist != 1 {
-		return
+		return nil
 	}
 	s.start_value, s.start_byte, s.start_bit =
 		getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
 
 	closeCircle(s.circle, s.start_byte)
-	s.nextchan <- s.start_value
+	s.mynextchan <- s.start_value
+	return nil
 }
 
 // getFirstZeroBit return the first zero bit
@@ -80,6 +96,32 @@ func getFirstZeroBit(x byte) uint {
 		x >>= 1
 	}
 	return 8
+}
+
+func (s *Squasher) run() {
+	mt := &sync.Mutex{}
+	curval := int64(math.MaxInt64) // init val
+
+	go func() {
+		lastv := int64(math.MaxInt64)
+		for {
+			mt.Lock()
+			if curval == math.MaxInt64 || lastv == curval { // no new value
+				mt.Unlock()
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			lastv = curval // new value have been set
+			mt.Unlock()
+			s.nextchan <- lastv
+		}
+	}()
+
+	for v := range s.mynextchan {
+		mt.Lock()
+		curval = v
+		mt.Unlock()
+	}
 }
 
 // get next non 0xFF byte, assume that the circle alway end with 0x00
@@ -113,5 +155,5 @@ func (s *Squasher) Next() <-chan int64 { return s.nextchan }
 
 func (s *Squasher) GetStatus() string {
 	ofs, _, _ := getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
-	return fmt.Sprintf("first offset: %d, last offset: %d, next missing %d", s.start_value, s.latest, ofs)
+	return fmt.Sprintf("[%d .. %d .. %d]", s.start_value, ofs, s.latest)
 }

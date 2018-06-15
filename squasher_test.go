@@ -19,14 +19,10 @@ func TestSquasherLimit(t *testing.T) {
 		sq.Mark(int64(i))
 	}
 
-	defer func() {
-		if r := recover(); r != nil {
-			return
-		}
+	err := sq.Mark(20000)
+	if err == nil {
 		t.Errorf("should be error, got nil")
-
-	}()
-	sq.Mark(20000)
+	}
 }
 
 func TestFirstZeroBit(t *testing.T) {
