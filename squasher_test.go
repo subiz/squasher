@@ -2,9 +2,11 @@ package squasher
 
 import (
 	"testing"
+	"time"
 )
 
 func TestSquasherLimit(t *testing.T) {
+	//t.Skip()
 	sq := NewSquasher(0, 1000)
 
 	go func() {
@@ -26,6 +28,7 @@ func TestSquasherLimit(t *testing.T) {
 }
 
 func TestFirstZeroBit(t *testing.T) {
+	//t.Skip()
 	cs := []struct {
 		x   byte
 		out uint
@@ -43,6 +46,7 @@ func TestFirstZeroBit(t *testing.T) {
 }
 
 func TestNextMissingIndex(t *testing.T) {
+	//t.Skip()
 	cs := []struct {
 		circle            []byte
 		value             int64
@@ -78,6 +82,7 @@ func TestNextMissingIndex(t *testing.T) {
 }
 
 func TestNextNonFFByte(t *testing.T) {
+	//t.Skip()
 	ts := []struct {
 		circle             []byte
 		start_byte, output uint
@@ -96,7 +101,36 @@ func TestNextNonFFByte(t *testing.T) {
 	}
 }
 
+func TestSquasherClean(t *testing.T) {
+	sq := NewSquasher(0, 23)
+
+	errc := make(chan int64)
+	go func() {
+		for i := range sq.Next() {
+			if i > 30 {
+				errc <- i
+				break
+			}
+		}
+	}()
+
+
+	for i := 1; i < 23; i++ {
+		sq.Mark(int64(i))
+	}
+
+	sq.Mark(0)
+	sq.Mark(23); sq.Mark(24); sq.Mark(25); sq.Mark(26)
+	sq.Mark(27); sq.Mark(28); sq.Mark(29); sq.Mark(30)
+	select {
+	case i := <-errc:
+		t.Errorf("got 30 before commit: %d", i)
+	case <-time.After(2 * time.Second):
+	}
+}
+
 func TestSquasher(t *testing.T) {
+	//t.Skip()
 	sq := NewSquasher(0, 4)
 
 	gotc := make(chan int64)
@@ -128,7 +162,7 @@ func TestSquasher(t *testing.T) {
 }
 
 func TestSquasher100(t *testing.T) {
-
+	//t.Skip()
 	sq := NewSquasher(0, 500)
 
 	gotc := make(chan int64)
@@ -156,6 +190,7 @@ func TestSquasher100(t *testing.T) {
 }
 
 func TestSquasherTurnAround(t *testing.T) {
+	//t.Skip()
 	sq := NewSquasher(0, 100)
 
 	donec := make(chan bool, 0)
@@ -173,4 +208,30 @@ func TestSquasherTurnAround(t *testing.T) {
 	}
 
 	<-donec
+}
+
+func TestSetBit(t *testing.T) {
+	//t.Skip()
+	ts := []struct {
+		circle             []byte
+		start_byte, start_bit uint
+		start_value, val int64
+		out_circle []byte
+	}{
+		{[]byte{0, 0xF5, 0xD1, 0xF6}, 1, 0, 10, 20, []byte{0, 0xF5, 0xD5, 0xF6}},
+		{[]byte{0, 0x80, 0xD5, 0xB4}, 1, 7, 10, 20, []byte{0, 0x80, 0xD5, 0xB6}},
+	}
+	for it, c := range ts {
+		setBit(c.circle, c.start_byte, c.start_bit, c.start_value,
+			c.val)
+		if len(c.out_circle) != len(c.circle) {
+			t.Errorf("should be equal, expect %d, got %d",
+				len(c.circle), len(c.out_circle))
+		}
+		for i := range c.out_circle {
+			if c.out_circle[i] != c.circle[i] {
+				t.Errorf("expect %d, got %d at index %d, of test %d", c.out_circle[i], c.circle[i], i, it)
+			}
+		}
+	}
 }
