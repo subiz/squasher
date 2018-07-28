@@ -2,9 +2,7 @@ package squasher
 
 import (
 	"fmt"
-	"math"
 	"sync"
-	"time"
 )
 
 type Squasher struct {
@@ -13,51 +11,82 @@ type Squasher struct {
 	start_value int64
 	start_byte  uint
 	start_bit   uint
-	mynextchan  chan int64 // internal next chan
 	nextchan    chan int64 // next chan receive next value
 	latest      int64
 }
 
-// a circle with size = 2
-//     start_byte: 1 --v     v-- start_bit: 3
-// byt 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 3 3 3 3 3 3 3 3
-// bit 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7
+func PrintCircle(circle []byte) {
+	for _, c := range circle {
+		fmt.Printf("%08b ", c)
+	}
+	fmt.Println("")
+}
 
+// a circle with size = 2
+//     start_byte: 1 --v     v-- start_bit: 4
+// byt 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 3 3 3 3 3 3 3 3
+// bit 7 6 5 4 3 2 1 0 7 6 5 4 3 2 1 0 7 6 5 4 3 2 1 0 7 6 5 4 3 2 1 0
+// cir 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 1 0 0 0 1 1 0 1 1 1 1 1 0 1 0 0
 //
 //
 func NewSquasher(start int64, size int32) *Squasher {
 	if size < 2 {
 		size = 2
 	}
-	circlelen := size/8 + 1 // number of byte to store <size> bit
-	circlelen++             // add extra byte to mark end of circle
+	size++
+	circlelen := size / 8 // number of byte to store <size> bit
+	if size % 8 > 0 {
+		circlelen++
+	}
+
+	circlelen++           // add extra byte to mark end of circle
+
 	circle := make([]byte, circlelen, circlelen)
 	circle[0] = 1
 	s := &Squasher{
 		Mutex:       &sync.Mutex{},
-		nextchan:    make(chan int64),
-		mynextchan:  make(chan int64),
+		nextchan:    make(chan int64, 1),
 		start_value: start - 1,
 		start_byte:  0,
 		start_bit:   0,
 		circle:      circle,
 	}
-	go s.run()
 	return s
 }
 
 // closeCircle set the end_byte (byte before start_byte) to zero
-func closeCircle(circle []byte, start_byte uint) {
+func zeroCircle(circle []byte, from, to uint) {
 	ln := uint(len(circle))
-	prevbyte := (start_byte + ln - 1) % ln
-	circle[prevbyte] = 0
+	if ln <= from || ln <= to {
+		panic("something wrong here, from or to is greater than len of circle")
+	}
+
+	if to < from {
+		to += ln
+	}
+	for i := from; i < to; i++ {
+		circle[i%ln] = 0
+	}
 }
 
-//
+func setBit(circle []byte, start_byte, start_bit uint, start_value, i int64) {
+	ln := uint(len(circle))
+	dist := i - start_value
+	if dist <= 0 {
+		return
+	}
+	bytediff := (uint(dist) + start_bit) / 8
+	nextbyte := (start_byte + bytediff) % ln
+
+	bit := (uint(dist) + start_bit) % 8
+	circle[nextbyte] |= 1 << bit
+}
+
+// Mark an value i as processed
 func (s *Squasher) Mark(i int64) error {
 	s.Lock()
 	defer s.Unlock()
-
+	//defer func() { PrintCircle(s.circle) }()
 	if i > s.latest {
 		s.latest = i
 	}
@@ -67,24 +96,32 @@ func (s *Squasher) Mark(i int64) error {
 	}
 	ln := uint(len(s.circle))
 
-	if uint(dist) > ln*8-1 {
+	if uint(dist) > (ln-1)*8 - 1 {
 		return fmt.Errorf("out of range, i should be less than %d", int64(ln)-1+s.start_value)
 	}
 
-	bytediff := (uint(dist) + s.start_bit) / 8
-	nextbyte := (s.start_byte + bytediff) % ln
-
-	bit := (uint(dist) + s.start_bit) % 8
-	s.circle[nextbyte] |= 1 << bit
+	setBit(s.circle, s.start_byte, s.start_bit, s.start_value, i)
 	if dist != 1 {
 		return nil
 	}
-	s.start_value, s.start_byte, s.start_bit =
+	nextval, nextbyte, nextbit :=
 		getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
 
-	closeCircle(s.circle, s.start_byte)
-	s.mynextchan <- s.start_value
+	zeroCircle(s.circle, s.start_byte, nextbyte)
+	s.start_value, s.start_byte, s.start_bit = nextval, nextbyte, nextbit
+	s.pushNext(nextval)
 	return nil
+}
+
+// not thread safe, so remember to lock before call this
+func (s *Squasher) pushNext(val int64) {
+	// flush out next channel first
+	select {
+	case <- s.nextchan:
+	default:
+	}
+
+	s.nextchan <- val
 }
 
 // getFirstZeroBit return the first zero bit
@@ -96,32 +133,6 @@ func getFirstZeroBit(x byte) uint {
 		x >>= 1
 	}
 	return 8
-}
-
-func (s *Squasher) run() {
-	mt := &sync.Mutex{}
-	curval := int64(math.MaxInt64) // init val
-
-	go func() {
-		lastv := int64(math.MaxInt64)
-		for {
-			mt.Lock()
-			if curval == math.MaxInt64 || lastv == curval { // no new value
-				mt.Unlock()
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			lastv = curval // new value have been set
-			mt.Unlock()
-			s.nextchan <- lastv
-		}
-	}()
-
-	for v := range s.mynextchan {
-		mt.Lock()
-		curval = v
-		mt.Unlock()
-	}
 }
 
 // get next non 0xFF byte, assume that the circle alway end with 0x00
