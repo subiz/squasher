@@ -15,8 +15,9 @@ type Squasher struct {
 	latest      int64
 }
 
-func PrintCircle(circle []byte) {
-	for _, c := range circle {
+func (s *Squasher) Print() {
+	fmt.Printf("CIRCLE(%d) %d:%d=%d ------\n", len(s.circle), s.start_byte, s.start_bit, s.start_value)
+	for _, c := range s.circle {
 		fmt.Printf("%08b ", c)
 	}
 	fmt.Println("")
@@ -35,11 +36,9 @@ func NewSquasher(start int64, size int32) *Squasher {
 	}
 	size++
 	circlelen := size / 8 // number of byte to store <size> bit
-	if size % 8 > 0 {
+	if size%8 > 0 {
 		circlelen++
 	}
-
-	circlelen++           // add extra byte to mark end of circle
 
 	circle := make([]byte, circlelen, circlelen)
 	circle[0] = 1
@@ -47,24 +46,38 @@ func NewSquasher(start int64, size int32) *Squasher {
 		Mutex:       &sync.Mutex{},
 		nextchan:    make(chan int64, 1),
 		start_value: start - 1,
-		start_byte:  0,
-		start_bit:   0,
 		circle:      circle,
 	}
 	return s
 }
 
 // closeCircle set the end_byte (byte before start_byte) to zero
-func zeroCircle(circle []byte, from, to uint) {
+func zeroCircle(circle []byte, frombyt, tobyt, frombit, tobit uint) {
 	ln := uint(len(circle))
-	if ln <= from || ln <= to {
+	if ln <= frombyt || ln <= tobyt {
 		panic("something wrong here, from or to is greater than len of circle")
 	}
+	// zero out first byte
+	var mask byte
+	if frombyt == tobyt {
+		for i := frombit; i%8 != tobit; i++ {
+			mask |= 1 << (i % 8)
+		}
+		mask ^= 0xFF
+		circle[frombyt] &= mask
+		if frombit < tobit {
+			return
+		}
+		frombyt++
+	} else {
+		var mask byte = (0xFF >> tobit) << tobit
+		circle[tobyt] &= mask
 
-	if to < from {
-		to += ln
+		mask = (0xFF << (8 - frombit) >> (8 - frombit))
+		circle[frombyt] &= mask
 	}
-	for i := from; i < to; i++ {
+
+	for i := frombyt; i%ln != tobyt; i++ {
 		circle[i%ln] = 0
 	}
 }
@@ -82,11 +95,10 @@ func setBit(circle []byte, start_byte, start_bit uint, start_value, i int64) {
 	circle[nextbyte] |= 1 << bit
 }
 
-// Mark an value i as processed
+// Mark a value i as processed
 func (s *Squasher) Mark(i int64) error {
 	s.Lock()
 	defer s.Unlock()
-	//defer func() { PrintCircle(s.circle) }()
 	if i > s.latest {
 		s.latest = i
 	}
@@ -96,8 +108,8 @@ func (s *Squasher) Mark(i int64) error {
 	}
 	ln := uint(len(s.circle))
 
-	if uint(dist) > (ln-1)*8 - 1 {
-		return fmt.Errorf("out of range, i should be less than %d", int64(ln)-1+s.start_value)
+	if uint(dist) > (ln)*8-1 {
+		return fmt.Errorf("out of range, i should be less than %d", int64(ln)*8+s.start_value)
 	}
 
 	setBit(s.circle, s.start_byte, s.start_bit, s.start_value, i)
@@ -107,7 +119,7 @@ func (s *Squasher) Mark(i int64) error {
 	nextval, nextbyte, nextbit :=
 		getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
 
-	zeroCircle(s.circle, s.start_byte, nextbyte)
+	zeroCircle(s.circle, s.start_byte, nextbyte, s.start_bit, nextbit)
 	s.start_value, s.start_byte, s.start_bit = nextval, nextbyte, nextbit
 	s.pushNext(nextval)
 	return nil
@@ -117,7 +129,7 @@ func (s *Squasher) Mark(i int64) error {
 func (s *Squasher) pushNext(val int64) {
 	// flush out next channel first
 	select {
-	case <- s.nextchan:
+	case <-s.nextchan:
 	default:
 	}
 
@@ -125,31 +137,45 @@ func (s *Squasher) pushNext(val int64) {
 }
 
 // getFirstZeroBit return the first zero bit
-func getFirstZeroBit(x byte) uint {
-	for bit := uint(0); bit < 8; bit++ {
-		if x%2 == 0 {
-			return bit
+// if x[startbit] == 0, return startbit
+// if no zero, return startbit
+func getFirstZeroBit(x byte, startbit uint) uint {
+	for i := uint(0); i < 8; i++ {
+		var mask byte = 1 << ((startbit + i) % 8)
+		if x&mask == 0 {
+			return (startbit + i) % 8
 		}
-		x >>= 1
 	}
-	return 8
+	return startbit
 }
 
-// get next non 0xFF byte, assume that the circle alway end with 0x00
-func getNextNonFFByte(circle []byte, start_byte uint) uint {
+// get next non 0xFF byte
+func getNextNonFFByte(circle []byte, start_byte, start_bit uint) uint {
 	ln := uint(len(circle))
-	for ; circle[start_byte%ln] == 0xFF; start_byte++ {
-		if start_byte > 2*ln {
-			panic(fmt.Sprintf("invalid circle, no end: %v", circle))
+	var i = start_byte
+	if circle[i]>>start_bit == 0xff>>start_bit {
+		i++
+	} else {
+		return i
+	}
+	for ; circle[i%ln] == 0xFF; i++ {
+		if i-ln == start_byte {
+			return start_byte
 		}
 	}
-	return start_byte % ln
+	return i % ln
 }
 
 func getNextMissingIndex(circle []byte, start_value int64, start_byte, start_bit uint) (int64, uint, uint) {
 	ln := uint(len(circle))
-	byt := getNextNonFFByte(circle, start_byte)
-	bit := getFirstZeroBit(circle[byt])
+
+	byt := getNextNonFFByte(circle, start_byte, start_bit)
+	sbit := start_bit
+	if byt != start_byte {
+		sbit = 0
+	}
+	bit := getFirstZeroBit(circle[byt], sbit)
+
 	if bit == 0 { // got 0 -> decrease 1 byte
 		byt = (byt + ln - 1) % ln
 	}
