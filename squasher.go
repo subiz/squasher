@@ -118,7 +118,6 @@ func (s *Squasher) Mark(i int64) error {
 	}
 	nextval, nextbyte, nextbit :=
 		getNextMissingIndex(s.circle, s.start_value, s.start_byte, s.start_bit)
-
 	zeroCircle(s.circle, s.start_byte, nextbyte, s.start_bit, nextbit)
 	s.start_value, s.start_byte, s.start_bit = nextval, nextbyte, nextbit
 	s.pushNext(nextval)
@@ -178,13 +177,18 @@ func getNextMissingIndex(circle []byte, start_value int64, start_byte, start_bit
 
 	if bit == 0 { // got 0 -> decrease 1 byte
 		byt = (byt + ln - 1) % ln
+		bit = 8
 	}
-	bit = (bit + 8 - 1) % 8
+	bit--
 
 	if byt < start_byte {
 		byt += ln
 	}
-	dist := (byt-start_byte)*8 + bit - start_bit
+
+	dist := (int(byt)-int(start_byte))*8 + (int(bit) - int(start_bit))
+	if dist < 0 {
+		dist += 8
+	}
 	return start_value + int64(dist), byt % ln, bit
 }
 
