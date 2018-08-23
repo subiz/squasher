@@ -63,6 +63,7 @@ func TestNextMissingIndex(t *testing.T) {
 		{[]byte{0xff, 0, 0xff, 0xff}, 0, 2, 0, 23, 0, 7},
 		{[]byte{0xff, 0xff, 0xff, 0}, 0, 1, 0, 15, 2, 7},
 		{[]byte{0, 0xff}, 0, 1, 0, 7, 1, 7},
+		{[]byte{0x81}, 2064, 0, 7, 2065, 0, 0},
 	}
 
 	for i, c := range cs {
@@ -169,7 +170,6 @@ func TestSquasherClean(t *testing.T) {
 
 func TestSquasher(t *testing.T) {
 	sq := NewSquasher(0, 4)
-
 	gotc := make(chan int64)
 
 	go func() {
@@ -182,7 +182,37 @@ func TestSquasher(t *testing.T) {
 	sq.Mark(3)
 	sq.Mark(4)
 	sq.Mark(1)
+	select {
+	case <-gotc:
+		t.Error("should not call this")
+	default:
+	}
 
+	sq.Mark(0)
+	out := <-gotc
+	if out != 4 {
+		t.Errorf("expect 4, got %d", out)
+	}
+}
+
+func TestSquasher2058(t *testing.T) {
+	sq := NewSquasher(2058, 4)
+	gotc := make(chan int64)
+
+	go func() {
+		for i := range sq.Next() {
+			gotc <- i
+		}
+	}()
+	sq.Mark(2058)
+	sq.Mark(2059)
+	sq.Mark(2060)
+	sq.Mark(2061)
+	sq.Mark(2062)
+	sq.Mark(2063)
+	sq.Mark(2064)
+	sq.Mark(2065)
+	sq.Mark(2066)
 	select {
 	case <-gotc:
 		t.Error("should not call this")
@@ -192,8 +222,8 @@ func TestSquasher(t *testing.T) {
 
 	sq.Mark(0)
 	out := <-gotc
-	if out != 4 {
-		t.Errorf("expect 4, got %d", out)
+	if out != 2066 {
+		t.Errorf("expect 2066, got %d", out)
 	}
 }
 
@@ -224,21 +254,41 @@ func TestSquasher100(t *testing.T) {
 	}
 }
 
-func TestSquasherTurnAround(t *testing.T) {
-	sq := NewSquasher(0, 100)
+func TestSquasherTurnAround2(t *testing.T) {
+	sq := NewSquasher(0, 10)
 
 	donec := make(chan bool, 0)
 	go func() {
 		for i := range sq.Next() {
-
-			if i == 1000 {
+			if i == 10000 {
 				break
 			}
 		}
 		donec <- true
 	}()
 
-	for i := 0; i <= 1000; i++ {
+	for i := 0; i <= 10000; i++ {
+		sq.Mark(int64(i))
+	}
+
+	<-donec
+}
+
+func TestSquasherTurnAround(t *testing.T) {
+	start := int64(2047)
+	sq := NewSquasher(start, 4)
+
+	donec := make(chan bool, 0)
+	go func() {
+		for i := range sq.Next() {
+			if i == 10000 {
+				break
+			}
+		}
+		donec <- true
+	}()
+
+	for i := start; i <= 10000; i++ {
 		sq.Mark(int64(i))
 	}
 
