@@ -1,27 +1,40 @@
 package squasher
 
 import (
-	"bytes"
 	"testing"
-	"time"
 )
 
-func TestSquasherLimit(t *testing.T) {
-	sq := NewSquasher(0, 7)
-	err := sq.Mark(7)
-	if err == nil {
-		t.Errorf("should be error, got nil")
-	}
+func TestZeroCirle(t *testing.T) {
+	ts := []struct {
+		circle                           []byte
+		frombyte, frombit, tobyte, tobit uint
+		out_circle                       []byte
+	}{
+		// don't need to expand
+		{[]byte{0b11111111}, 0, 1, 0, 3, []byte{0b11111001}},
+		{[]byte{0b11111111}, 0, 1, 0, 1, []byte{0b11111111}},
+		{[]byte{0b11111111}, 0, 4, 0, 3, []byte{0b00001000}},
+		{[]byte{0b11111111}, 0, 4, 0, 7, []byte{0b10001111}},
+		{[]byte{0b11111111}, 0, 4, 0, 9, []byte{0b10001111}}, // 9 is considered as 7
 
-	sq = NewSquasher(0, 8)
-	if err = sq.Mark(14); err != nil {
-		t.Errorf("should have no error but got %v", err)
+		{[]byte{0b11111111, 0b11111111}, 0, 4, 1, 2, []byte{0b00001111, 0b11111100}},
+		{[]byte{0b11111111, 0b11111111}, 1, 2, 0, 4, []byte{0b11110000, 0b00000011}},
+		{[]byte{0b11111111, 0b11111111}, 0, 4, 0, 1, []byte{0b00001110, 0b00000000}},
+		{[]byte{0b11111111, 0b11111111}, 0, 1, 0, 4, []byte{0b11110001, 0b11111111}},
 	}
-	if err = sq.Mark(15); err == nil {
-		t.Errorf("should be error, got nil")
+	for it, c := range ts {
+		zeroCircle(c.circle, c.frombyte, c.tobyte, c.frombit, c.tobit)
+		if len(c.out_circle) != len(c.circle) {
+			t.Errorf("should be equal, expect %d, got %d",
+				len(c.out_circle), len(c.circle))
+		}
+		for i := range c.out_circle {
+			if c.out_circle[i] != c.circle[i] {
+				t.Errorf("expect %08b, got %08b at index %d, of test %d", c.out_circle[i], c.circle[i], i, it)
+			}
+		}
 	}
 }
-
 
 func TestFirstZeroBit(t *testing.T) {
 	cs := []struct {
@@ -45,7 +58,7 @@ func TestFirstZeroBit(t *testing.T) {
 	}
 }
 
-func TestNextMissingIndex(t *testing.T) {
+func TestNextStart(t *testing.T) {
 	cs := []struct {
 		circle            []byte
 		value             int64
@@ -53,12 +66,11 @@ func TestNextMissingIndex(t *testing.T) {
 		nextvalue         int64
 		nextbyte, nextbit uint
 	}{
-		{[]byte{0x0F, 0, 0}, 2100, 0, 1, 2102, 0, 3},    // - 1111 | - - | - -
-		{[]byte{0xFF, 0x1F, 0}, 2100, 0, 2, 2110, 1, 4}, // 1111 1111 | 0001 1111 | --
-		{[]byte{0, 0xFF, 0x05}, 2100, 1, 4, 2104, 2, 0}, // -- | 1111 1111 | - 0101
-		{[]byte{0, 0xFF, 0}, 2100, 1, 4, 2103, 1, 7},    // -- | 1111 1111 | -
-		{[]byte{0, 0xF0, 0}, 2100, 1, 4, 2103, 1, 7},    // -- | 1111 1111 | -
-		{[]byte{0x0F, 0, 0xFF}, 2100, 2, 0, 2111, 0, 3}, // - 1111 | - | 1111 1111
+		{[]byte{0b00001110, 0, 0}, 2100, 0, 1, 2102, 0, 3},
+		{[]byte{0b11111100, 0b00011111, 0}, 2100, 0, 2, 2110, 1, 4},
+		{[]byte{0, 0b11110000, 0b00000101}, 2100, 1, 4, 2104, 2, 0},
+		{[]byte{0, 0b11110000, 0}, 2100, 1, 4, 2103, 1, 7},
+		{[]byte{0b00001111, 0, 0b11111111}, 2100, 2, 0, 2111, 0, 3},
 		{[]byte{0xff, 0xff, 0xff, 0x3f, 0}, 0, 0, 0, 29, 3, 5},
 		{[]byte{0xff, 0, 0xff, 0xff}, 0, 2, 0, 23, 0, 7},
 		{[]byte{0xff, 0xff, 0xff, 0}, 0, 1, 0, 15, 2, 7},
@@ -67,7 +79,7 @@ func TestNextMissingIndex(t *testing.T) {
 	}
 
 	for i, c := range cs {
-		nval, nbyt, nbit := getNextMissingIndex(c.circle, c.value, c.byt, c.bit)
+		nval, nbyt, nbit := getNextStart(c.circle, c.value, c.byt, c.bit)
 		if nval != c.nextvalue {
 			t.Errorf("test %d, expect val %d, got %d", i, c.nextvalue, nval)
 		}
@@ -103,196 +115,56 @@ func TestNextNonFFByte(t *testing.T) {
 	}
 }
 
-func TestSquasherCleanBit(t *testing.T) {
-	sq := NewSquasher(0, 15)
-
-	errc := make(chan int64)
-	go func() {
-		for i := range sq.Next() {
-			if i > 30 {
-				errc <- i
-				break
-			}
-		}
-	}()
-
-	for i := 0; i < 5; i++ {
-		sq.Mark(int64(i))
-	}
-
-	for i := 6; i < 18; i++ {
-		if err := sq.Mark(int64(i)); err != nil {
-			panic(err)
-		}
-	}
-	if 0 != bytes.Compare(sq.circle, []byte{0xA7, 0xFF}) {
-		t.Errorf("should be equal")
-	}
-
-	sq.Mark(18)
-	sq.Mark(19)
-
-	sq.Mark(5)
-
-	if 0 != bytes.Compare(sq.circle, []byte{0x10, 0x00}) {
-		t.Errorf("should be equal")
-	}
-}
-
-func TestSquasherClean(t *testing.T) {
-	sq := NewSquasher(0, 23)
-
-	errc := make(chan int64)
-	go func() {
-		for i := range sq.Next() {
-			if i > 30 {
-				errc <- i
-				break
-			}
-		}
-	}()
-
-	for i := 1; i < 23; i++ {
-		sq.Mark(int64(i))
-	}
-
-	sq.Mark(0)
-	for i := 23; i < 31; i++ {
-		sq.Mark(int64(23))
-	}
-
-	select {
-	case i := <-errc:
-		t.Errorf("got 30 before commit: %d", i)
-	case <-time.After(2 * time.Second):
-	}
-}
-
 func TestSquasher(t *testing.T) {
-	sq := NewSquasher(0, 4)
-	gotc := make(chan int64)
+	sq := NewSquasher(0)
 
-	go func() {
-		for i := range sq.Next() {
-			gotc <- i
+	for i := 1; i <= 2300; i++ {
+		last := sq.Mark(int64(i))
+		if last != -1 {
+			t.Errorf("should equal -1, got %d", last)
 		}
-	}()
-
-	sq.Mark(2)
-	sq.Mark(3)
-	sq.Mark(4)
-	sq.Mark(1)
-	select {
-	case <-gotc:
-		t.Error("should not call this")
-	default:
 	}
 
-	sq.Mark(0)
-	out := <-gotc
-	if out != 4 {
-		t.Errorf("expect 4, got %d", out)
+	last := sq.Mark(0)
+	if last != 2300 {
+		t.Errorf("should equal 2300, got %d", last)
 	}
 }
 
-func TestSquasher2058(t *testing.T) {
-	sq := NewSquasher(2058, 4)
-	gotc := make(chan int64)
+func TestSquasherDupMark(t *testing.T) {
+	sq := NewSquasher(0)
 
-	go func() {
-		for i := range sq.Next() {
-			gotc <- i
+	for i := 1; i <= 23; i++ {
+		sq.Mark(int64(i))
+	}
+
+	last := sq.Mark(0)
+	if last != 23 {
+		t.Errorf("should equal 22, got %d", last)
+	}
+
+	for i := 1; i <= 10; i++ {
+		if last := sq.Mark(int64(i)); last != 23 {
+			t.Errorf("should equal 22, got %d", last)
 		}
-	}()
-	sq.Mark(2058)
-	sq.Mark(2059)
-	sq.Mark(2060)
-	sq.Mark(2061)
-	sq.Mark(2062)
-	sq.Mark(2063)
-	sq.Mark(2064)
-	sq.Mark(2065)
-	sq.Mark(2066)
-	select {
-	case <-gotc:
-		t.Error("should not call this")
-	default:
-
-	}
-
-	sq.Mark(0)
-	out := <-gotc
-	if out != 2066 {
-		t.Errorf("expect 2066, got %d", out)
-	}
-}
-
-func TestSquasher100(t *testing.T) {
-	sq := NewSquasher(0, 500)
-
-	gotc := make(chan int64)
-
-	go func() {
-		for i := range sq.Next() {
-			gotc <- i
-		}
-	}()
-	for i := int64(1); i <= 400; i++ {
-		sq.Mark(i)
-
-	}
-	select {
-	case <-gotc:
-		t.Error("should not call this")
-	default:
-
-	}
-	sq.Mark(0)
-	out := <-gotc
-	if out != 400 {
-		t.Errorf("expect 400, got %d", out)
 	}
 }
 
 func TestSquasherTurnAround2(t *testing.T) {
-	sq := NewSquasher(0, 10)
-
-	donec := make(chan bool, 0)
-	go func() {
-		for i := range sq.Next() {
-			if i == 10000 {
-				break
-			}
-		}
-		donec <- true
-	}()
-
+	sq := NewSquasher(0)
+	cursize := len(sq.circle)
+	last := int64(0)
 	for i := 0; i <= 10000; i++ {
-		sq.Mark(int64(i))
+		last = sq.Mark(int64(i))
 	}
 
-	<-donec
-}
-
-func TestSquasherTurnAround(t *testing.T) {
-	start := int64(2047)
-	sq := NewSquasher(start, 4)
-
-	donec := make(chan bool, 0)
-	go func() {
-		for i := range sq.Next() {
-			if i == 10000 {
-				break
-			}
-		}
-		donec <- true
-	}()
-
-	for i := start; i <= 10000; i++ {
-		sq.Mark(int64(i))
+	if last != 10000 {
+		t.Errorf("should equal, got %d", last)
 	}
 
-	<-donec
+	if len(sq.circle) != cursize {
+		t.Errorf("should be %d, got %d", cursize, len(sq.circle))
+	}
 }
 
 func TestSetBit(t *testing.T) {
@@ -315,6 +187,36 @@ func TestSetBit(t *testing.T) {
 		for i := range c.out_circle {
 			if c.out_circle[i] != c.circle[i] {
 				t.Errorf("expect %d, got %d at index %d, of test %d", c.out_circle[i], c.circle[i], i, it)
+			}
+		}
+	}
+}
+
+func TestExpandCircle(t *testing.T) {
+	ts := []struct {
+		circle                []byte
+		start_byte, start_bit uint
+		newsize               uint
+		out_circle            []byte
+	}{
+		// don't need to expand
+		{[]byte{0b11110001, 0b11111111}, 0, 4, 10, []byte{0b11110001, 0b11111111}},
+
+		// expand to 4 bytes
+		{[]byte{0b11110001, 0b11111111}, 0, 4, 20, []byte{0b11110000, 0b11111111, 0b00000001, 0b00000000}},
+
+		// expand to 8 bytes
+		{[]byte{0b11111111, 0b10001111}, 1, 7, 62, []byte{0b10000000, 0b11111111, 0b00001111, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000}},
+	}
+	for it, c := range ts {
+		newcircle := expandCircle(c.circle, c.start_byte, c.start_bit, c.newsize)
+		if len(c.out_circle) != len(newcircle) {
+			t.Errorf("should be equal, expect %d, got %d",
+				len(c.out_circle), len(newcircle))
+		}
+		for i := range c.out_circle {
+			if c.out_circle[i] != newcircle[i] {
+				t.Errorf("expect %d, got %d at index %d, of test %d", c.out_circle[i], newcircle[i], i, it)
 			}
 		}
 	}
