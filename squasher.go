@@ -25,22 +25,14 @@ func (s *Squasher) Print() {
 }
 
 // a circle with size = 2
-//     start_byte: 1 ---v     v-- start_bit: 4
+//
+//	start_byte: 1 ---v     v-- start_bit: 4
+//
 // byt 0 0 0 0 0 0 0 0  1 1 1 1 1 1 1 1  2 2 2 2 2 2 2 2  3 3 3 3 3 3 3 3
 // bit 7 6 5 4 3 2 1 0  7 6 5 4 3 2 1 0  7 6 5 4 3 2 1 0  7 6 5 4 3 2 1 0
 // cir 0 0 0 0 0 0 0 0  0 0 0 1 0 0 1 0  1 0 0 0 1 1 0 1  1 1 1 1 0 1 0 0
-//
-func NewSquasher(start int64) *Squasher {
-	circle := make([]byte, 32, 32)
-	circle[0] = 1
-	s := &Squasher{
-		Mutex:       &sync.Mutex{},
-		start_value: start - 1,
-		start_byte:  0,
-		start_bit:   0,
-		circle:      circle,
-	}
-	return s
+func NewSquasher() *Squasher {
+	return &Squasher{Mutex: &sync.Mutex{}}
 }
 
 // zeroCircle zero all bits from byte to byte
@@ -119,13 +111,13 @@ func expandCircle(circle []byte, start_byte, start_bit, newsize uint) []byte {
 		return circle
 	}
 
-	for true {
+	for {
 		newlen = newlen * 2
 		if newlen*8 > newsize+1 {
 			break
 		}
 	}
-	newcircle := make([]byte, newlen, newlen)
+	newcircle := make([]byte, newlen)
 
 	oldlen := uint(len(circle))
 	for i := uint(0); i < oldlen; i++ {
@@ -138,10 +130,37 @@ func expandCircle(circle []byte, start_byte, start_bit, newsize uint) []byte {
 	return newcircle
 }
 
+func (s *Squasher) Init(i int64) {
+	s.Lock()
+	defer s.Unlock()
+
+	if s.circle != nil {
+		return
+	}
+	// init
+	circle := make([]byte, 32)
+	circle[0] = 1
+	s.start_value = i - 1
+	s.start_byte = 0
+	s.start_bit = 0
+	s.circle = circle
+}
+
 // Mark a value i as processed
 func (s *Squasher) Mark(i int64) int64 {
 	s.Lock()
 	defer s.Unlock()
+
+	if s.circle == nil {
+		// init
+		circle := make([]byte, 32)
+		circle[0] = 1
+		s.start_value = i - 1
+		s.start_byte = 0
+		s.start_bit = 0
+		s.circle = circle
+	}
+
 	if i > s.latest {
 		s.latest = i
 	}

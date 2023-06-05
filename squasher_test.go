@@ -116,7 +116,8 @@ func TestNextNonFFByte(t *testing.T) {
 }
 
 func TestSquasher(t *testing.T) {
-	sq := NewSquasher(0)
+	sq := NewSquasher()
+	sq.Mark(-1)
 
 	for i := 1; i <= 2300; i++ {
 		last := sq.Mark(int64(i))
@@ -132,7 +133,7 @@ func TestSquasher(t *testing.T) {
 }
 
 func TestSquasherDupMark(t *testing.T) {
-	sq := NewSquasher(0)
+	sq := NewSquasher()
 
 	for i := 1; i <= 23; i++ {
 		sq.Mark(int64(i))
@@ -151,10 +152,10 @@ func TestSquasherDupMark(t *testing.T) {
 }
 
 func TestSquasherTurnAround2(t *testing.T) {
-	sq := NewSquasher(0)
+	sq := NewSquasher()
+	last := sq.Mark(0)
 	cursize := len(sq.circle)
-	last := int64(0)
-	for i := 0; i <= 10000; i++ {
+	for i := 1; i <= 10000; i++ {
 		last = sq.Mark(int64(i))
 	}
 
